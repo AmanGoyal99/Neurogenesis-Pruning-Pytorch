@@ -1,0 +1,25 @@
+name: jahs
+channels:
+  - pytorch
+  - defaults
+dependencies:
+  - python=3.9
+  - pip
+  - numpy
+  - matplotlib
+  - statsmodels
+  - jupyterlab
+  - pytorch
+  - torchvision
+  - gxx_linux-64
+  - gcc_linux-64
+  - swig
+  - pip:
+    - jupyterlab_vim
+    - tqdm
+    - ipdb
+    - torchsummary
+    - configspace
+    - smac
+    - pytest
+
