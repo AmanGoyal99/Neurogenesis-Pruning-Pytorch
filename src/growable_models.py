@@ -15,8 +15,10 @@ from tqdm import tqdm
 import time
 import math
 from scipy.stats import entropy
-
+import os
 from utils.utils import AvgrageMeter, accuracy
+
+
 from torch.utils.tensorboard import SummaryWriter
 writer = SummaryWriter('runs/fashion_mnist_experiment')
 
@@ -331,7 +333,9 @@ class GrowableBlock(nn.Sequential):
         if a_svd is None:
             a_svd = torch.linalg.svd(a, full_matrices=False)
         U, svdvals, Vh = a_svd
-
+        # U = torch.from_numpy(U).to('cuda') #required when np is used for svd calc
+        # svdvals = torch.from_numpy(svdvals).to('cuda') # required when np is used for svd calc
+        # Vh = torch.from_numpy(Vh).to('cuda') # required when np is used for svd calc
         # invert S (of U @ S @ V^T)
         mask = svdvals > torch.finfo(torch.float32).eps
         s_inv = svdvals
@@ -356,6 +360,7 @@ class GrowableBlock(nn.Sequential):
         :return: epsilon-numerical rank (edim) and effective rank (erank)
         """
         # edim = torch.sum(svdvals > 0.01) #changed from 0.1
+        # svdvals = torch.from_numpy(svdvals) #required when using numpy for svd calc
         edim = torch.count_nonzero(svdvals>0.01) #changed
         normalized_svdvals = svdvals / torch.sum(svdvals)
         # print('sum_svdvals',torch.sum(svdvals))
@@ -364,14 +369,15 @@ class GrowableBlock(nn.Sequential):
         if log_results:
             self.erank_log.append(erank.item())
             self.edim_log.append(edim.item())
-        return edim, erank
+        return edim,erank
 
     def _flatten_and_normalize_act(self, act):
         """Flattens the given matrix to 2d: (batch, w, h) x channel, and normalizes over batch."""
-        # return 1./math.sqrt(act.shape[0]) * act.swapaxes(1, -1).flatten(end_dim=-2)
-        if len(act.shape) > 2:
-            act = torch.transpose(torch.transpose(act, 0, 1).reshape(act.shape[1], -1), 0, 1)
-        return act.clone() / act.shape[1]**0.5
+        x = 1./math.sqrt(act.shape[0]) * act.swapaxes(1, -1).flatten(end_dim=-2)
+        # if len(act.shape) > 2:
+        #     act = torch.transpose(torch.transpose(act, 0, 1).reshape(act.shape[1], -1), 0, 1)
+        # y =  act.clone() / act.shape[1]**0.5
+        return x
 
     def _generate_random_weights(self, n_required):
         """Generate (normalized uniform-random) weight and bias tensors, more neurons than required."""
@@ -425,11 +431,10 @@ class GrowableBlock(nn.Sequential):
             if not self.initial_edim:
                 self.initial_edim = rel_edim
             # print('rel_edim',rel_edim)
-            # if rel_edim > self.initial_edim:
             to_add = max(0,math.floor(conv.num_neurons() * (rel_edim - self.trigger_threshold * self.initial_edim)))
             # to_add = max(0,edim-int(0.95*conv.num_neurons())) #changed
             # print(to_add)
-            x = edim-int(0.95*conv.num_neurons())
+            # x = edim-int(0.95*conv.num_neurons())
             # print(conv.num_neurons() * (rel_edim - self.trigger_threshold * self.initial_edim))
             to_add = min(to_add, conv.room_to_grow_out_neurons())
             # to_add = 0
@@ -496,9 +501,9 @@ class GrowableBlock(nn.Sequential):
         # compute svd of flat_activations: A = U @ S @ V^T = svd( 1/sqrt(#samples) H )
         U, svdvals, Vh = torch.linalg.svd(flat_activations, full_matrices=False)
         # print('flat_activations',flat_activations)
-        edim, erank = self._edim_and_erank(svdvals, log_results=self.logging)
-
-        to_add = self._compute_trigger(edim, erank)
+        edim,erank = self._edim_and_erank(svdvals, log_results=self.logging)
+        # print('edim',edim)
+        to_add = self._compute_trigger(edim,erank)
         if max_growth is not None:
             to_add = min(to_add, max_growth)
 
@@ -510,13 +515,14 @@ class GrowableBlock(nn.Sequential):
             # print('Has something to add')
             # generates more weights than required. we will then evaluate them and choose the best ones
             weights, bias = self._generate_random_weights(n_required=to_add)
-
+            # trainable_params = sum(p.numel() for p in weights.parameters() if p.requires_grad)
+            # print(trainable_params)
             # do a forward pass using the new weights
             new_activations = self._simulate_weights(input_activations, weights, bias)
             flat_new_activations = self._flatten_and_normalize_act(new_activations)
 
             # choose the weight from channels which cannot be represented in basis of columns in flat_activations
-            weights_idx = self._least_representable(flat_activations, flat_new_activations, a_svd=(U, svdvals, Vh))[:to_add]
+            weights_idx = self._least_representable(flat_activations, flat_new_activations, a_svd=(U, svdvals, Vh))[:to_add] 
 
             conv.grow_out_neurons_by(to_add, weights[weights_idx], bias[weights_idx])
             for module in list(self)[self.main_growable+1:]:
@@ -524,7 +530,7 @@ class GrowableBlock(nn.Sequential):
                     module.grow_num_features_by(to_add)
         # else:
         #     # print('Nothin to add')
-        return to_add
+        return to_add,edim
 
     def grow_input_by(self, n):
         for i, module in enumerate(self):
@@ -634,7 +640,8 @@ class GrowableModel(nn.Module):
             #     block_layers = [GrowableBatchNorm2d(in_channels_max, in_channels_initial, track_running_stats=False)] + block_layers
             if use_BN:
                 block_layers.append(GrowableBatchNorm2d(out_channels_max, out_channels_initial, track_running_stats=False))
-            block_layers.append(nn.MaxPool2d(kernel_size=2, stride=2,padding=padding))
+            if i not in [2,4,6]: #Comment for original arch
+                block_layers.append(nn.MaxPool2d(kernel_size=2, stride=2,padding=padding))
             conv_block_0 = GrowableBlock(*block_layers,
                                          trigger_threshold=conv_trigger_threshold, enable_logging=enable_logging,
                                          reproduce_paper=self.reproduce_paper)
@@ -646,7 +653,7 @@ class GrowableModel(nn.Module):
         self.conv_activations = None  # a list holding the most recent activations
 
         # transition from convolutional layers to fully-connected (fc) layers
-        # self.pooling = nn.AdaptiveAvgPool2d(1) if glob_av_pool else nn.Identity()
+        # self.avgpooling = nn.AdaptiveAvgPool2d(1) if glob_av_pool else nn.Identity()
         self.pooling = nn.MaxPool2d(kernel_size,2,padding = (kernel_size - 1) // 2) if max_pool else nn.Identity() #changed
 
         in_features_initial = int(self._get_conv_output(input_shape))
@@ -693,8 +700,8 @@ class GrowableModel(nn.Module):
         x = Variable(torch.rand(bs, *shape))
         for conv_layer in self.conv_layers:
             x = conv_layer(x)
-            x = self.pooling(x)
-        # x = self.pooling(x)
+            # x = self.pooling(x)
+        # x = self.pooling(x) #Uncomment for original arch
         n_size = x.data.view(bs, -1).size(1)
         return n_size
 
@@ -721,9 +728,11 @@ class GrowableModel(nn.Module):
             if self.grow:
                 self.conv_activations.append(x.detach().clone())
             # x = self.maxpool(x)
+            # x = self.pooling(x)
 
         # transition from 3d activations to 1d
-        x = self.pooling(x)
+        # x = self.pooling(x) #Uncomment for original arch
+        # x = torch.flatten(x)
         x = x.view(x.size(0), -1)
 
         # pass through dense layers
@@ -737,12 +746,15 @@ class GrowableModel(nn.Module):
         # final layer
         x = self.last_fc(x)
         return x
-
-    def grow_all_layers(self):
+    def grow_all_layers(self,edim_track,to_add_track):
         only_logging = self.max_params_reached() or (len(self.train_loss_log) % 10 != 0 and not self.reproduce_paper)
-
+        # global edim_track
+        # edim_track = {0:[],1:[],2:[],3:[],4:[],5:[],6:[],7:[],8:[],9:[]}
+        # edim_track = None 
+        # to_add_track = {0:[],1:[],2:[],3:[],4:[],5:[],6:[],7:[],8:[],9:[]}
+        # to_add_track = None 
         # grow last layers first, as growing affects the input of the next layer
-        def grow_layers(layers, activations, next_layer):
+        def grow_layers(layers, activations, next_layer,edim_track,to_add_track):
             def get_next_layer(i):
                 if i == len(layers) - 1:
                     return next_layer
@@ -756,18 +768,30 @@ class GrowableModel(nn.Module):
                     max_added_neurons = math.floor(self.room_to_max_params() * neurons_per_param)
                 else:
                     max_added_neurons = None
-                added_neurons = layers[i].grow(activations[i], activations[i + 1],
-                                               max_growth=max_added_neurons, only_logging=only_logging)
+                # print(layers[i].num_params())
 
+                added_neurons,edim = layers[i].grow(activations[i], activations[i + 1],
+                                               max_growth=max_added_neurons, only_logging=only_logging)
+                # print(added_neurons)
+                # if i==7:
+                # print(edim_track)
+                edim_track[i].append(edim.item())
+                to_add_track[i].append(added_neurons)
+                # to_add_track[i].append(added_neurons)
+                # print('edim',edim_track)
+                # print('to_add',to_add_track)
                 # extend the follow layer to accept the larger input (weights initialized to 0)
                 if added_neurons:
                     get_next_layer(i).grow_input_by(added_neurons)
+                # print(layers[i].num_params())
+            return edim_track,to_add_track
 
-        grow_layers(self.fc_layers, self.fc_activations, self.last_fc)
-        grow_layers(self.conv_layers, self.conv_activations,
-                    self.fc_layers[0] if self.fc_layers else self.last_fc)
+        # x = grow_layers(self.fc_layers, self.fc_activations, self.last_fc)
+        edim_track,to_add_track = grow_layers(self.conv_layers, self.conv_activations,
+                    self.fc_layers[0] if self.fc_layers else self.last_fc,edim_track,to_add_track)
+        return edim_track,to_add_track
 
-    def train_fn(self, optimizer, criterion, loader, device, epoch,train=True, grow=True):
+    def train_fn(self, optimizer, criterion, loader, device, epoch,edim_track,to_add_track,track_growth,standard_channel_list,train=True, grow=True):
         """
         Training method
         :param optimizer: optimization algorithm
@@ -786,6 +810,11 @@ class GrowableModel(nn.Module):
         self.grow = grow  # and not self.max_params_reached()
         # print(self.conv_layers[0].num_neurons())
         t = tqdm(loader)
+        # edim_track = []
+        # to_add_track = []
+        # edim_track = {0:[],1:[],2:[],3:[],4:[],5:[],6:[],7:[],8:[],9:[]}
+        # to_add_track = {0:[],1:[],2:[],3:[],4:[],5:[],6:[],7:[],8:[],9:[]}
+        # print(len(t))
         for i,(images, labels) in enumerate(t):
             images = images.to(device)
             labels = labels.to(device)
@@ -798,17 +827,29 @@ class GrowableModel(nn.Module):
             if i%100==99:
                 writer.add_scalar("training/learning_rate",optimizer.param_groups[0]['lr'],i+len(loader)*(epoch))
                 writer.add_scalar("training/loss",loss/100,i+len(loader)*(epoch))
-            if self.grow:
-                self.grow_all_layers()
-                # if self.max_params_reached():
-                #     self.grow = False
+            # if i%50==0:
 
+            if self.grow:
+                edim_track,to_add_track = self.grow_all_layers(edim_track,to_add_track)
+                # print(edim)
+                # print(to_add)
+                # print(layer)
+                # edim_track[layer].append(edim.item())
+                # to_add_track[layer].append(to_add)
+                # print(edim)
+            if self.max_params_reached():
+                self.grow = False
+            # to_add_track.append(to_add)
+            # edim_track.append(edim)
             acc = accuracy(logits, labels, topk=(1,))[0]  # accuracy given by top 3
             n = images.size(0)
             objs.update(loss.item(), n)
             score.update(acc.item(), n)
 
+
             conv_channel_str = '-'.join([str(conv_layer.num_neurons()) for conv_layer in self.conv_layers])
+            for i in range(len(self.conv_layers)):
+                track_growth[i].append(self.conv_layers[i].num_neurons()/standard_channel_list[i])
             # print(self.conv_layers)
             # print(self.conv_layers[0].num_neurons().item())
             fc_channel_str = '-'.join([str(fc_layer.num_neurons()) for fc_layer in self.fc_layers])
@@ -831,7 +872,7 @@ class GrowableModel(nn.Module):
         # for i in range(8):
         #     out_channels_initial, out_channels_max = full_config[key_conv + str(i)]
         #     out_max_channels_list.append(out_channels_max)
-        return score.avg, objs.avg, conv_channel_list, out_channels_max_list, fc_channel_list
+        return score.avg, objs.avg, conv_channel_list, out_channels_max_list, fc_channel_list,edim_track,to_add_track,track_growth
 
     def eval_fn(self, loader, device, criterion,train=False):
         """
