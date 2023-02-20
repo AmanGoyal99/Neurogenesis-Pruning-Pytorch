@@ -24,6 +24,10 @@ from torchvision import datasets
 from torchvision import transforms
 
 from growable_models import GrowableModel
+import matplotlib.pyplot as plt
+import time 
+# CUDA_VISIBLE_DEVICES = 1
+os.environ['CUDA_VISIBLE_DEVICES'] = "1"
 # from torch.utils.tensorboard import SummaryWriter
 # writer = SummaryWriter('runs/fashion_mnist_experiment')
 
@@ -41,6 +45,18 @@ def get_optimizer_and_crit(cfg):
 # Target Algorithm
 # The signature of the function determines what arguments are passed to it
 # i.e., budget is passed to the target algorithm if it is present in the signature
+def visualize(epochs,relative_layer_sizes,exp_name,xlabel,ylabel):
+    fig = plt.figure()
+    ax = plt.axes()
+    x = np.array(epochs) 
+    y = np.array(relative_layer_sizes)
+    plt.plot(x,y)
+    title = exp_name.split('_')[0]
+    plt.title(title)
+    plt.ylabel(ylabel)
+    plt.xlabel(xlabel)
+    plt.savefig('/home/amangoya/Neurogenesis-pytorch/Neurogenesis-Pruning-Pytorch/src/09.02/plots/10th_epoch/' + exp_name + '.png')
+
 def evaluate_config(cfg: Configuration, seed: int, instance: str, budget: float, nfolds=3):
     """
     Creates an instance of the torch_model and fits the given data on it.
@@ -80,12 +96,12 @@ def evaluate_config(cfg: Configuration, seed: int, instance: str, budget: float,
         download=True,
         transform=pre_processing
     )
-    trainset = datasets.CIFAR10( #changed
-        root=data_dir,
-        train=True,
-        download=True,
-        transform=pre_processing
-    )
+    trainset = datasets.CIFAR10(root=data_dir, train=True, download=True,
+                        transform=transforms.Compose([ 
+                                transforms.ToTensor(),
+                                transforms.Normalize((0.1307,), (0.3081,)),
+                                transforms.Resize((32,32))
+                            ]))
 
     valset = datasets.CIFAR10( #changed
         root=data_dir,
@@ -100,7 +116,30 @@ def evaluate_config(cfg: Configuration, seed: int, instance: str, budget: float,
     score = []
     log_list = []
 
+    # model = GrowableModel(cfg,
+    #                                 input_shape=input_shape,
+    #                                 num_classes=10,
+    #                                 enable_logging=bool(experiment_name)).to(model_device)
+
+
     logging.info(f'evaluating config:\n{cfg}')
+    dataset = datasets.CIFAR10('../data', train=True, download=True,
+                     transform=transforms.Compose([ 
+                            transforms.ToTensor(),
+                            transforms.Normalize((0.1307,), (0.3081,)),
+                            transforms.Resize((32,32))
+                        ]))
+    # train_set, val_set = torch.utils.data.random_split(dataset, lengths=[int(0.9*len(dataset)), int(0.1*len(dataset))])
+    # train_loader = torch.utils.data.DataLoader(train_set, batch_size=128, shuffle=True)
+    # val_loader = torch.utils.data.DataLoader(val_set, batch_size=128, shuffle=True)
+
+    # test_loader = torch.utils.data.DataLoader(
+    # datasets.CIFAR10('../data', train=False, transform=transforms.Compose([
+    #                         transforms.ToTensor(),
+    #                         transforms.Normalize((0.1307,), (0.3081,)),
+    #                         transforms.Resize((32,32))
+    #                     ])),
+    # batch_size=128, shuffle=True)
 
     for train_idx, valid_idx in cv.split(trainset, trainset.targets):
         train_data = Subset(trainset, train_idx)
@@ -110,38 +149,149 @@ def evaluate_config(cfg: Configuration, seed: int, instance: str, budget: float,
     # train_loader = DataLoader(dataset=trainset, batch_size=batch_size, shuffle=True)
     # val_loader = DataLoader(dataset=valset, batch_size=batch_size, shuffle=False)
 
-        model = GrowableModel(cfg,
-                                    input_shape=input_shape,
-                                    num_classes=10,
-                                    enable_logging=bool(experiment_name)).to(model_device)
+    model = GrowableModel(cfg,
+                                input_shape=input_shape,
+                                num_classes=10,
+                                enable_logging=bool(experiment_name)).to(model_device)
 
-        print(model)
+    print(model)
 
-        model_optimizer, train_criterion = get_optimizer_and_crit(cfg)
-        optimizer = model_optimizer(model.parameters(), lr=lr)
-        train_criterion = train_criterion().to(device)
+    model_optimizer, train_criterion = get_optimizer_and_crit(cfg)
+    optimizer = model_optimizer(model.parameters(), lr=lr)
+    train_criterion = train_criterion().to(device)
+    conv1_relative_layer_size = [] 
+    conv2_relative_layer_size = []
+    conv3_relative_layer_size = [] 
+    conv4_relative_layer_size = []
+    conv5_relative_layer_size = []
+    conv6_relative_layer_size = []
+    conv7_relative_layer_size = []
+    conv8_relative_layer_size = [] 
+    fc1_relative_layer_size = []
+    fc2_relative_layer_size = []
+    # to_add_track = []
+    # edim_track = [] 
+    start_time = time.time()
+    added_neurons_track = {0:[],1:[],2:[],3:[],4:[],5:[],6:[],7:[],8:[],9:[]}
+    edim_track = {0:[],1:[],2:[],3:[],4:[],5:[],6:[],7:[],8:[],9:[]}
+    track_growth = {0:[],1:[],2:[],3:[],4:[],5:[],6:[],7:[]}
+    standard_channel_list = [64, 128, 256, 256, 512, 512, 512,512]
 
-        for epoch in range(num_epochs):
-            logging.info('#' * 50)
-            logging.info('Epoch [{}/{}]'.format(epoch + 1, num_epochs))
-            train_score, train_loss = model.train_fn(optimizer, train_criterion, train_loader, model_device,epoch)
-            logging.info('Train accuracy %f', train_score)
-            # if i%100==99:
-            #     writer.add_scalar("training/learning_rate",optimizer.param_groups[0]['lr'],i+len(train_val)*(epoch))
-            #     writer.add_scalar("training/loss",train_loss/100,i+len(train_val)*(epoch))
+    # added_neurons_track = []
+    # edim_track = []
+    for epoch in range(num_epochs):
+        logging.info('#' * 50)
+        logging.info('Epoch [{}/{}]'.format(epoch + 1, num_epochs))
+        train_score, train_loss, conv_channel_list, out_max_channel_list, fc_channel_list,edim_track,to_add_track,track_growth = model.train_fn(optimizer, train_criterion, train_loader, model_device,epoch,edim_track,added_neurons_track,track_growth,standard_channel_list)
+        # for i in range(len(conv_channel_list)):
+        #     if not added_neurons_track[i]:
+        #         added_neurons_track[i].append(conv_channel_list[i])
+        #     else:
+        #         added_neurons_track[i].append(conv_channel_list[i] - added_neurons_track[i][-1])
+        # print(conv_channel_list)
+        # print(out_max_channel_list)
+        # print(fc_channel_list)
+        # divide_by_2 = [2]*len(out_max_channel_list)
+        # out_max_channel_list = out_max_channel_list/divide_by_2
+        # standard_channel_list = [64, 128, 256, 256, 512, 512, 512,512]
+        # print(standard_channel_list)
+        logging.info('Train accuracy %f', train_score)                
+        conv1_relative_layer_size.append(conv_channel_list[0]/standard_channel_list[0])
+        conv2_relative_layer_size.append(conv_channel_list[1]/standard_channel_list[1])
+        conv3_relative_layer_size.append(conv_channel_list[2]/standard_channel_list[2])
+        conv4_relative_layer_size.append(conv_channel_list[3]/standard_channel_list[3])
+        conv5_relative_layer_size.append(conv_channel_list[4]/standard_channel_list[4])
+        conv6_relative_layer_size.append(conv_channel_list[5]/standard_channel_list[5])
+        conv7_relative_layer_size.append(conv_channel_list[6]/standard_channel_list[6])
+        conv8_relative_layer_size.append(conv_channel_list[7]/standard_channel_list[7])
+        fc1_relative_layer_size.append(fc_channel_list[0]/4096)
+        fc2_relative_layer_size.append(fc_channel_list[1]/4096)
+    print('conv1_relative_layer_size',conv1_relative_layer_size)
+    print('conv2_relative_layer_size',conv2_relative_layer_size)
+    print('conv3_relative_layer_size',conv3_relative_layer_size)
+    print('conv4_relative_layer_size',conv4_relative_layer_size)
+    print('conv5_relative_layer_size',conv5_relative_layer_size)
+    print('conv6_relative_layer_size',conv6_relative_layer_size)
+    print('conv7_relative_layer_size',conv7_relative_layer_size)
+    print('conv8_relative_layer_size',conv8_relative_layer_size)
+    print('fc1_relative_layer_size',fc1_relative_layer_size)
+    print('fc2_relative_layer_size',fc1_relative_layer_size)
+    # print('to_add_track',added_neurons_track)
+    print('edim',edim_track)
+    print('len of edim_track[0]',len(edim_track[0]))
+    print('to_add',to_add_track)
+    print('len of to_add_track[0]',len(to_add_track[0]))
+    exp_name = 'trigger_threshold_0.9_required_10_svdals_0.01_graphs_testing_cifar10_50_epochs_2/'
+    end_time = time.time()
+    total_time = end_time - start_time
+    print('Total training time in seconds:',total_time)
+    print('Total training time in hrs:',total_time/3600)
+    ###Visualize neuron generation####
+    # exit(0)
+    epochs = [i+1 for i in range(len(train_loader)*10)]
+    visualize(epochs,track_growth[0],'Conv1_neuron_growth','iterations','Relative Layer Sizes')
+    visualize(epochs,track_growth[1],'Conv2_neuron_growth','iterations', 'Relative Layer Sizes')
+    visualize(epochs,track_growth[2],'Conv3_neuron_growth','iterations', 'Relative Layer Sizes')
+    visualize(epochs,track_growth[3],'Conv4_neuron_growth','iterations','Relative Layer Sizes')
+    visualize(epochs,track_growth[4],'Conv5_neuron_growth','iterations', 'Relative Layer Sizes')
+    visualize(epochs,track_growth[5],'Conv6_neuron_growth','iterations', 'Relative Layer Sizes')
+    visualize(epochs,track_growth[6],'Conv7_neuron_growth','iterations','Relative Layer Sizes')
+    visualize(epochs,track_growth[7],'Conv8_neuron_growth','iterations', 'Relative Layer Sizes')
 
-        val_score = model.eval_fn(val_loader, device,train_criterion)
-        score.append(val_score)
+    ###effdim vs epochs####
+    visualize(epochs,edim_track[0],'Conv1_effdim_track','iterations', 'effdim')
+    visualize(epochs,edim_track[1],'Conv2_effdim_track','iterations', 'effdim')
+    visualize(epochs,edim_track[2],'Conv3_effdim_track','iterations', 'effdim')
+    visualize(epochs,edim_track[3],'Conv4_effdim_track','iterations', 'effdim')
+    visualize(epochs,edim_track[4],'Conv5_effdim_track','iterations', 'effdim')
+    visualize(epochs,edim_track[5],'Conv6_effdim_track','iterations', 'effdim')
+    visualize(epochs,edim_track[6],'Conv7_effdim_track','iterations', 'effdim')
+    visualize(epochs,edim_track[7],'Conv8_effdim_track','iterations', 'effdim')
 
-        if experiment_name:
-            model_log = model.retrieve_logs()
-            model_log['val_acc'] = val_score
-            log_list.append(model_log)
-            with open(os.path.join('logs', f'{experiment_name}.json'), 'w') as f:
-                json.dump(log_list, f)
+    ###to_add vs epochs###
+    visualize(epochs,to_add_track[0],'Conv1_to_add_track','iterations','to_add')
+    visualize(epochs,to_add_track[1],'Conv2_to_add_track','iterations','to_add')
+    visualize(epochs,to_add_track[2],'Conv3_to_add_track','iterations','to_add')
+    visualize(epochs,to_add_track[3],'Conv4_to_add_track','iterations','to_add')
+    visualize(epochs,to_add_track[4],'Conv5_to_add_track','iterations','to_add')
+    visualize(epochs,to_add_track[5],'Conv6_to_add_track','iterations','to_add')
+    visualize(epochs,to_add_track[6],'Conv7_to_add_track','iterations','to_add')
+    visualize(epochs,to_add_track[7],'Conv8_to_add_track','iterations','to_add')
 
-        val_acc = 1 - np.mean(score)  # because minimize
-        return val_acc
+
+    ###effdim vs to_add####
+    visualize(edim_track[0],to_add_track[0],'Conv1_effdim_to_add','effdim','to_add')
+    visualize(edim_track[1],to_add_track[1],'Conv2_effdim_to_add','effdim','to_add')
+    visualize(edim_track[2],to_add_track[2],'Conv3_effdim_to_add','effdim', 'to_add')
+    visualize(edim_track[3],to_add_track[3],'Conv4_effdim_to_add','effdim','to_add')
+    visualize(edim_track[4],to_add_track[4],'Conv5_effdim_to_add','effdim','to_add')
+    visualize(edim_track[5],to_add_track[5],'Conv6_effdim_to_add','effdim', 'to_add')
+    visualize(edim_track[6],to_add_track[6],'Conv7_effdim_to_add','effdim','to_add')
+    visualize(edim_track[7],to_add_track[7],'Conv8_effdim_to_add','effdim','to_add')
+    
+        # if i%100==99:
+        #     writer.add_scalar("training/learning_rate",optimizer.param_groups[0]['lr'],i+len(train_val)*(epoch))
+        #     writer.add_scalar("training/loss",train_loss/100,i+len(train_val)*(epoch))
+
+    val_score = model.eval_fn(val_loader, device,train_criterion)
+    score.append(val_score)
+
+    if experiment_name:
+        model_log = model.retrieve_logs()
+        model_log['val_acc'] = val_score
+        log_list.append(model_log)
+        with open(os.path.join('logs', f'{experiment_name}.json'), 'w') as f:
+            json.dump(log_list, f)
+
+    val_acc = 1 - np.mean(score)  # because minimize
+
+    total_params = sum(param.numel() for param in model.parameters())
+    print('Total Params of Model',total_params)
+    trainable_params = sum(
+    p.numel() for p in model.parameters() if p.requires_grad)
+    print('Trainable Params of Model',trainable_params)
+
+    return val_acc
 
 
 if __name__ == '__main__':
@@ -199,16 +349,16 @@ if __name__ == '__main__':
         'trigger_threshold':0.9,
         # 'conv_trigger_threshold': 0.5,
         # 'max_params': 3000,
-        # 'n_channels_conv_0': (64, 128),  # (initial, maximum) number of channels
-        # 'n_channels_conv_1': (128, 256),
-        # 'n_channels_conv_2': (256, 512),
-        # 'n_channels_conv_3': (256, 512),
-        # 'n_channels_conv_4': (512, 1024),
-        # 'n_channels_conv_5': (512, 1024),
-        # 'n_channels_conv_6': (512, 1024),
-        # 'n_channels_conv_7': (512, 1024),
-        # 'n_features_fc_0': (512,2**12),
-        # 'n_features_fc_1': (2**12, 2**14),
+        # 'n_channels_conv_0': (64 , 64),  # (initial, maximum) number of channels
+        # 'n_channels_conv_1': (128, 128),
+        # 'n_channels_conv_2': (256 , 256),
+        # 'n_channels_conv_3': (256 , 256),
+        # 'n_channels_conv_4': (512 , 512),
+        # 'n_channels_conv_5': (512 , 512),
+        # 'n_channels_conv_6': (512 , 512),
+        # 'n_channels_conv_7': (512 , 512),
+        # 'n_features_fc_0': (2**12,2**12),
+        # 'n_features_fc_1': (2**12, 2**12),
         'n_channels_conv_0': (16, 128),  # (initial, maximum) number of channels
         'n_channels_conv_1': (32, 256),
         'n_channels_conv_2': (64, 512),
@@ -227,15 +377,17 @@ if __name__ == '__main__':
         'dropout_rate': 0.,
         # 'max_params': None,
         'reproduce_paper': True,
-        'learning_rate_init': 2.5e-5,
-        'batch_size': 100,
+        'learning_rate_init': 3e-4,
+        # 'learning_rate_init': 0.0001,
+        'batch_size': 256,
+        # 'batch_size': 100,
         'data_dir': 'CIFAR10',
         'optimizer': 'Adam',
         'train_criterion': 'CrossEntropy',
         'device':'cuda'
     }
     cfg = default_config
-    evaluate_config(cfg, 0, '', budget=100, nfolds=2)
+    evaluate_config(cfg, 0, '', budget=2, nfolds=2)
     # # SMAC scenario object
     # scenario = Scenario({"run_obj": "quality",  # optimize quality (alternative to runtime)
     #                      "wallclock-limit": runtime,  # max duration to run the optimization (in seconds)
